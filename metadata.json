@@ -1,0 +1,6 @@
+{
+  "name": "CircuPack AI — Food Packaging & Circular Shelf-Life Engine",
+  "description": "Intelligent decision-support system recommending optimized barrier films, micro-perforated MAP specifications, and circular economy packaging for food commodities.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
