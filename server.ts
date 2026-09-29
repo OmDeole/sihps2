@@ -22,21 +22,25 @@ app.get('/healthz', (_req: Request, res: Response) => {
   res.status(200).send('OK');
 });
 
-app.get('/api/health', (_req: Request, res: Response) => {
+app.get('/api/health', (req: Request, res: Response) => {
+  const customKey = (req.headers['x-gemini-api-key'] as string) || (req.query?.apiKey as string);
+  const client = getGenAI(customKey);
+  const envKey = process.env.GEMINI_API_KEY;
   res.status(200).json({
     status: 'ok',
-    aiAvailable: !!ai,
+    aiAvailable: !!client,
+    hasEnvKey: Boolean(envKey && envKey !== 'MY_GEMINI_API_KEY'),
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
   });
 });
 
 // Initialize Google GenAI on the server side
-const apiKey = process.env.GEMINI_API_KEY;
-let ai: GoogleGenAI | null = null;
-if (apiKey) {
-  ai = new GoogleGenAI({
-    apiKey: apiKey,
+function getGenAI(customKey?: string): GoogleGenAI | null {
+  const key = customKey || process.env.GEMINI_API_KEY;
+  if (!key || key === 'MY_GEMINI_API_KEY') return null;
+  return new GoogleGenAI({
+    apiKey: key.trim(),
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
@@ -46,14 +50,20 @@ if (apiKey) {
 }
 
 // Resilient AI generation with automatic fallback to prevent 503 high-demand spike interruptions
-async function generateWithFallback(prompt: string, systemInstruction?: string) {
-  if (!ai) return null;
-  // gemini-2.5-flash is stable and active; gemini-3.8-flash as secondary
-  const candidateModels = ['gemini-2.5-flash', 'gemini-3.8-flash'];
+async function generateWithFallback(prompt: string, systemInstruction?: string, customKey?: string) {
+  const aiClient = getGenAI(customKey);
+  if (!aiClient) return null;
+
+  const candidateModels = [
+    'gemini-2.5-flash',
+    'gemini-3.8-flash',
+    'gemini-3.5-flash',
+    'gemini-2.5-pro',
+  ];
 
   for (const model of candidateModels) {
     try {
-      const response = await ai.models.generateContent({
+      const response = await aiClient.models.generateContent({
         model,
         contents: prompt,
         config: {
@@ -68,7 +78,6 @@ async function generateWithFallback(prompt: string, systemInstruction?: string) 
       }
     } catch (err: any) {
       console.warn(`[AI Engine] Model ${model} encountered an issue:`, err?.message || err);
-      // Attempt next model in candidate chain
     }
   }
 
@@ -78,7 +87,8 @@ async function generateWithFallback(prompt: string, systemInstruction?: string) 
 // Endpoint: Deep Technical Packaging Audit by Food Scientist AI
 app.post('/api/audit-packaging', async (req: Request, res: Response) => {
   try {
-    const { parameters, specification } = req.body;
+    const { parameters, specification, apiKey: bodyApiKey } = req.body || {};
+    const customKey = (req.headers['x-gemini-api-key'] as string) || bodyApiKey;
 
     const prompt = `You are a Senior Food Packaging Scientist and Circular Materials Engineer specializing in ASTM/ISO standards and Modified Atmosphere Packaging (MAP).
 Perform an authoritative, concise technical audit (under 300 words, structured in 4 bulleted sections) of the following formulation:
@@ -103,7 +113,7 @@ Sections required:
 
     const systemInstruction = 'You are an authoritative Senior Food Packaging Technologist and Materials Fellow. Deliver clear, objective, highly technical engineering audits.';
 
-    const aiResult = await generateWithFallback(prompt, systemInstruction);
+    const aiResult = await generateWithFallback(prompt, systemInstruction, customKey);
 
     if (aiResult) {
       return res.json({
@@ -149,7 +159,8 @@ Sections required:
 // Endpoint: Interactive Food Packaging Consultation Chat
 app.post('/api/technical-chat', async (req: Request, res: Response) => {
   try {
-    const { question, context } = req.body;
+    const { question, context, apiKey: bodyApiKey } = req.body || {};
+    const customKey = (req.headers['x-gemini-api-key'] as string) || bodyApiKey;
 
     const systemPrompt = `You are CircuPack Technical Advisor, an expert senior packaging engineer and food technologist.
 The user is asking a specific technical question regarding their food commodity packaging.
@@ -162,7 +173,7 @@ Storage Regimen: ${context?.storageType || 'Ambient'}
 
 Answer authoritatively with practical industrial steps, testing standards (ASTM/ISO), and circular packaging recommendations. Keep it concise (under 200 words) and direct.`;
 
-    const aiResult = await generateWithFallback(question, systemPrompt);
+    const aiResult = await generateWithFallback(question, systemPrompt, customKey);
 
     if (aiResult) {
       return res.json({

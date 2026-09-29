@@ -1,6 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { PackagingParameters, PackagingSpecification } from '../types/packaging';
-import { Sparkles, Send, Loader2, AlertCircle, CheckCircle, HelpCircle, Cpu, RefreshCw } from 'lucide-react';
+import {
+  Sparkles,
+  Send,
+  Loader2,
+  AlertCircle,
+  CheckCircle,
+  HelpCircle,
+  Cpu,
+  Key,
+  ExternalLink,
+  ChevronDown,
+  ChevronUp,
+  Check,
+  X
+} from 'lucide-react';
 
 interface AiPackagingAuditorProps {
   parameters: PackagingParameters;
@@ -14,12 +28,80 @@ export const AiPackagingAuditor: React.FC<AiPackagingAuditorProps> = ({
   const [loadingAudit, setLoadingAudit] = useState(false);
   const [auditResult, setAuditResult] = useState<string | null>(null);
   const [auditModel, setAuditModel] = useState<string | null>(null);
+  const [isBenchmark, setIsBenchmark] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
 
   // Technical Chat state
   const [chatQuestion, setChatQuestion] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
-  const [chatResponses, setChatResponses] = useState<{ q: string; a: string; model?: string }[]>([]);
+  const [chatResponses, setChatResponses] = useState<{ q: string; a: string; model?: string; isBenchmark?: boolean }[]>([]);
+
+  // API Key State & Health
+  const [apiKey, setApiKey] = useState<string>(() => {
+    try {
+      return localStorage.getItem('circupack_gemini_api_key') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [inputKey, setInputKey] = useState('');
+  const [showKeyConfig, setShowKeyConfig] = useState(false);
+  const [hasServerEnvKey, setHasServerEnvKey] = useState<boolean | null>(null);
+  const [keySavedToast, setKeySavedToast] = useState(false);
+
+  // Check health / API key presence on backend
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const headers: Record<string, string> = {};
+        if (apiKey) headers['x-gemini-api-key'] = apiKey;
+
+        const res = await fetch('/api/health', { headers });
+        if (res.ok) {
+          const data = await res.json();
+          setHasServerEnvKey(Boolean(data.hasEnvKey));
+        }
+      } catch {
+        // Ignore error
+      }
+    };
+    checkHealth();
+  }, [apiKey]);
+
+  const handleSaveKey = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = inputKey.trim();
+    if (!trimmed) return;
+    try {
+      localStorage.setItem('circupack_gemini_api_key', trimmed);
+    } catch (e) {
+      console.error(e);
+    }
+    setApiKey(trimmed);
+    setInputKey('');
+    setKeySavedToast(true);
+    setTimeout(() => setKeySavedToast(false), 3000);
+  };
+
+  const handleRemoveKey = () => {
+    try {
+      localStorage.removeItem('circupack_gemini_api_key');
+    } catch (e) {
+      console.error(e);
+    }
+    setApiKey('');
+    setInputKey('');
+  };
+
+  const getRequestHeaders = () => {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (apiKey) {
+      headers['x-gemini-api-key'] = apiKey;
+    }
+    return headers;
+  };
 
   const handleRunAudit = async () => {
     setLoadingAudit(true);
@@ -27,16 +109,18 @@ export const AiPackagingAuditor: React.FC<AiPackagingAuditorProps> = ({
     try {
       const res = await fetch('/api/audit-packaging', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getRequestHeaders(),
         body: JSON.stringify({ parameters, specification }),
       });
       const data = await res.json();
       if (data.auditAnalysis) {
         setAuditResult(data.auditAnalysis);
         setAuditModel(data.modelUsed || 'Gemini AI');
+        setIsBenchmark(Boolean(data.isBenchmark));
       } else {
         setAuditResult('Scientific validation completed. All barrier parameters fall within standard processing limits.');
         setAuditModel(data.modelUsed || 'Standard Baseline');
+        setIsBenchmark(true);
       }
     } catch (err: any) {
       console.error(err);
@@ -52,6 +136,7 @@ export const AiPackagingAuditor: React.FC<AiPackagingAuditorProps> = ({
         `- Compliant with EU Regulation 10/2011 and US FDA 21 CFR 177.`
       );
       setAuditModel('Deterministic Baseline');
+      setIsBenchmark(true);
     } finally {
       setLoadingAudit(false);
     }
@@ -68,7 +153,7 @@ export const AiPackagingAuditor: React.FC<AiPackagingAuditorProps> = ({
     try {
       const res = await fetch('/api/technical-chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getRequestHeaders(),
         body: JSON.stringify({
           question: q,
           context: {
@@ -87,6 +172,7 @@ export const AiPackagingAuditor: React.FC<AiPackagingAuditorProps> = ({
           q,
           a: data.answer || 'Consult standard ISO 15105 test protocols.',
           model: data.modelUsed,
+          isBenchmark: data.isBenchmark,
         },
       ]);
     } catch (err) {
@@ -96,6 +182,7 @@ export const AiPackagingAuditor: React.FC<AiPackagingAuditorProps> = ({
           q,
           a: `For ${parameters.customName}, maintain barrier limits (OTR: ${specification.barrierSpecs.otr.target} cc, WVTR: ${specification.barrierSpecs.wvtr.target} g). Ensure sealing bar temperature is properly calibrated within ${specification.physicalSpecs.sealTemperatureRange}.`,
           model: 'Technical Reference',
+          isBenchmark: true,
         },
       ]);
     } finally {
@@ -103,43 +190,147 @@ export const AiPackagingAuditor: React.FC<AiPackagingAuditorProps> = ({
     }
   };
 
+  const isAiActive = Boolean(hasServerEnvKey || apiKey);
+
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4 sm:p-6 mb-8">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 mb-5 border-b border-slate-200 gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 mb-4 border-b border-slate-200 gap-3">
         <div>
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex flex-wrap items-center gap-2 mb-1">
             <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500 font-semibold">
               Intelligent Validation & Food Science Copilot
             </span>
-            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] font-mono border border-emerald-200">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span>AI Engine Connected</span>
-            </span>
+
+            {/* AI Status Badge */}
+            {isAiActive ? (
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] font-mono border border-emerald-200">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>{hasServerEnvKey ? 'Gemini AI Active (Vercel Env)' : 'Gemini AI Active (Custom Key)'}</span>
+              </span>
+            ) : (
+              <button
+                onClick={() => setShowKeyConfig(!showKeyConfig)}
+                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-amber-50 text-amber-800 text-[10px] font-mono border border-amber-200 hover:bg-amber-100 transition-colors cursor-pointer"
+              >
+                <Key className="w-3 h-3 text-amber-600" />
+                <span>API Key Standby · Configure Key</span>
+              </button>
+            )}
           </div>
           <h3 className="text-lg sm:text-xl font-bold text-slate-900">
             AI Technical Packaging Auditor & Compatibility Review
           </h3>
         </div>
 
-        <button
-          onClick={handleRunAudit}
-          disabled={loadingAudit}
-          className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded flex items-center gap-2 transition-colors disabled:opacity-50 whitespace-nowrap self-start sm:self-auto min-h-[38px]"
-        >
-          {loadingAudit ? (
-            <>
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              <span>Analyzing Chemical Matrices...</span>
-            </>
-          ) : (
-            <>
-              <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Run Deep AI Formulation Audit</span>
-            </>
-          )}
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <button
+            onClick={() => setShowKeyConfig(!showKeyConfig)}
+            className="px-2.5 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-medium rounded flex items-center gap-1.5 transition-colors min-h-[38px]"
+            title="Configure Gemini API Key"
+          >
+            <Key className="w-3.5 h-3.5 text-slate-500" />
+            <span className="hidden md:inline">API Key</span>
+            {showKeyConfig ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+          </button>
+
+          <button
+            onClick={handleRunAudit}
+            disabled={loadingAudit}
+            className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded flex items-center gap-2 transition-colors disabled:opacity-50 whitespace-nowrap min-h-[38px]"
+          >
+            {loadingAudit ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Analyzing Chemical Matrices...</span>
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Run Deep AI Formulation Audit</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
+
+      {/* Optional Gemini API Key Drawer */}
+      {showKeyConfig && (
+        <div className="mb-6 p-4 bg-slate-50 border border-slate-300 rounded-lg text-xs space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-slate-900 flex items-center gap-1.5">
+              <Key className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Gemini API Key Configuration</span>
+            </span>
+            <button
+              onClick={() => setShowKeyConfig(false)}
+              className="text-slate-400 hover:text-slate-600"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <p className="text-slate-600 text-[11px] leading-relaxed">
+            You can either add <code className="bg-slate-200 px-1 py-0.5 rounded font-mono text-slate-800">GEMINI_API_KEY</code> in your <strong>Vercel Project Settings &gt; Environment Variables</strong> (recommended for production), or paste your Gemini API key below to test it directly in your browser.
+          </p>
+
+          {apiKey ? (
+            <div className="flex items-center justify-between p-2.5 bg-emerald-50/70 border border-emerald-200 rounded">
+              <div className="flex items-center gap-2">
+                <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span className="text-emerald-900 font-mono text-[11px]">
+                  Custom API Key stored: ••••••••{apiKey.slice(-4)}
+                </span>
+              </div>
+              <button
+                onClick={handleRemoveKey}
+                className="text-rose-600 hover:text-rose-800 text-[11px] font-semibold underline ml-3"
+              >
+                Remove
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleSaveKey} className="flex gap-2">
+              <input
+                type="password"
+                value={inputKey}
+                onChange={(e) => setInputKey(e.target.value)}
+                placeholder="AIzaSy... (Paste Gemini API Key)"
+                className="flex-1 px-3 py-1.5 bg-white border border-slate-300 rounded font-mono text-xs text-slate-900 focus:border-slate-900 outline-none"
+              />
+              <button
+                type="submit"
+                disabled={!inputKey.trim()}
+                className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold rounded disabled:opacity-50 text-xs"
+              >
+                Save Key
+              </button>
+            </form>
+          )}
+
+          {keySavedToast && (
+            <div className="text-[11px] text-emerald-700 font-medium flex items-center gap-1">
+              <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Gemini API Key active for this session and saved to local storage!</span>
+            </div>
+          )}
+
+          <div className="text-[10px] text-slate-500 pt-1 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
+            <span>
+              Don't have a key? Get one for free at{' '}
+              <a
+                href="https://aistudio.google.com/app/apikey"
+                target="_blank"
+                rel="noreferrer"
+                className="text-emerald-700 underline font-semibold inline-flex items-center gap-0.5"
+              >
+                Google AI Studio <ExternalLink className="w-2.5 h-2.5" />
+              </a>
+            </span>
+            <span>Supported: gemini-2.5-flash · gemini-3.8-flash · gemini-3.5-flash</span>
+          </div>
+        </div>
+      )}
 
       {/* Audit Results Section */}
       <div className="mb-8">
@@ -164,17 +355,30 @@ export const AiPackagingAuditor: React.FC<AiPackagingAuditorProps> = ({
 
         {auditResult && !loadingAudit && (
           <div className="p-4 sm:p-5 bg-slate-50 border border-slate-200 rounded space-y-3">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+            <div className="flex flex-wrap items-center justify-between border-b border-slate-200 pb-2 gap-2">
               <span className="text-xs font-mono uppercase tracking-wider text-slate-800 font-bold flex items-center gap-1.5">
                 <CheckCircle className="w-4 h-4 text-emerald-600" />
                 <span>Chemical & Barrier Audit Summary</span>
               </span>
-              {auditModel && (
-                <span className="text-[10px] font-mono text-slate-600 bg-white px-2 py-0.5 rounded border border-slate-200 flex items-center gap-1">
-                  <Cpu className="w-3 h-3 text-slate-500" />
-                  <span>{auditModel}</span>
-                </span>
-              )}
+
+              <div className="flex items-center gap-2">
+                {isBenchmark ? (
+                  <span className="text-[10px] font-mono text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 flex items-center gap-1">
+                    <span>Engineering Benchmark Baseline</span>
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-mono text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-emerald-500" />
+                    <span>Live Gemini AI ({auditModel})</span>
+                  </span>
+                )}
+                {auditModel && !isBenchmark && (
+                  <span className="text-[10px] font-mono text-slate-600 bg-white px-2 py-0.5 rounded border border-slate-200 flex items-center gap-1">
+                    <Cpu className="w-3 h-3 text-slate-500" />
+                    <span>{auditModel}</span>
+                  </span>
+                )}
+              </div>
             </div>
 
             <div className="text-xs leading-relaxed text-slate-700 whitespace-pre-wrap font-sans space-y-2">
@@ -224,8 +428,12 @@ export const AiPackagingAuditor: React.FC<AiPackagingAuditorProps> = ({
                 <div className="bg-slate-100 p-2.5 rounded text-slate-900 font-semibold flex items-center justify-between">
                   <span>Q: {item.q}</span>
                   {item.model && (
-                    <span className="text-[10px] font-mono text-slate-500 font-normal">
-                      {item.model}
+                    <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+                      item.isBenchmark
+                        ? 'bg-amber-50 text-amber-700 border-amber-200'
+                        : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    }`}>
+                      {item.isBenchmark ? 'Deterministic Baseline' : `Live: ${item.model}`}
                     </span>
                   )}
                 </div>
