@@ -15,6 +15,7 @@ import {
   Check,
   X
 } from 'lucide-react';
+import { directGeminiGenerate } from '../utils/geminiDirect';
 
 interface AiPackagingAuditorProps {
   parameters: PackagingParameters;
@@ -103,43 +104,92 @@ export const AiPackagingAuditor: React.FC<AiPackagingAuditorProps> = ({
     return headers;
   };
 
+  const AUDIT_PROMPT_TEMPLATE = (params: PackagingParameters, spec: PackagingSpecification) => `You are a Senior Food Packaging Scientist and Circular Materials Engineer specializing in ASTM/ISO standards and Modified Atmosphere Packaging (MAP).
+Perform an authoritative, concise technical audit (under 300 words, structured in 4 bulleted sections) of the following formulation:
+
+Commodity: ${params?.customName || 'Produce'} (${params?.category})
+Moisture: ${params?.moistureContent}% w/w | Water Activity: ${params?.waterActivity} aw | Fat: ${params?.fatContent}% w/w | pH: ${params?.pH}
+Respiration: ${params?.respirationRateClass} (${params?.respirationRateValue} mg CO₂/kg·h) | Storage: ${params?.storageType} at ${params?.storageTempC}°C, RH: ${params?.relativeHumidity}%
+
+Specification:
+Recommended Film: ${spec?.primaryRecommendation?.materialName} (${spec?.physicalSpecs?.filmThicknessTotalMicron} µm)
+OTR (ASTM D3985): ${spec?.barrierSpecs?.otr?.target} cc/(m²·24h·atm)
+WVTR (ASTM F1249): ${spec?.barrierSpecs?.wvtr?.target} g/(m²·24h)
+CO₂TR & Permselectivity β: ${spec?.barrierSpecs?.co2tr?.target} cc (β=${spec?.barrierSpecs?.co2tr?.permselectivityBeta || 3.8})
+MAP Gas: ${spec?.mapRequirements?.initialGasComposition?.o2Percent}% O₂ / ${spec?.mapRequirements?.initialGasComposition?.co2Percent}% CO₂ / ${spec?.mapRequirements?.initialGasComposition?.n2Percent}% N₂
+Circularity: ${spec?.circularity?.circularityScore}/100 (${spec?.circularity?.recyclabilityStream})
+
+Sections required:
+1. Barrier & Degradation Fit: OTR/WVTR match against mold, oxidation, or anaerobic fermentative off-odors.
+2. MAP Steady-State Equilibrium: Gas flux and packaging ballooning / hypoxia risk.
+3. Sealing Window & Mechanical Tolerance: Seal integrity (${spec?.physicalSpecs?.sealTemperatureRange || '105-125°C'}).
+4. Circularity & Compliance: Mono-material recyclability and migration safety under EU 10/2011 & US FDA 21 CFR 177.`;
+
+  const SYSTEM_INSTRUCTION = 'You are an authoritative Senior Food Packaging Technologist and Materials Fellow. Deliver clear, objective, highly technical engineering audits.';
+
   const handleRunAudit = async () => {
     setLoadingAudit(true);
     setAuditError(null);
+
+    // 1. Try Backend Serverless Endpoint
     try {
       const res = await fetch('/api/audit-packaging', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({ parameters, specification }),
       });
-      const data = await res.json();
-      if (data.auditAnalysis) {
-        setAuditResult(data.auditAnalysis);
-        setAuditModel(data.modelUsed || 'Gemini AI');
-        setIsBenchmark(Boolean(data.isBenchmark));
-      } else {
-        setAuditResult('Scientific validation completed. All barrier parameters fall within standard processing limits.');
-        setAuditModel(data.modelUsed || 'Standard Baseline');
-        setIsBenchmark(true);
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.auditAnalysis && !data.isBenchmark) {
+          setAuditResult(data.auditAnalysis);
+          setAuditModel(data.modelUsed || 'Gemini AI');
+          setIsBenchmark(false);
+          setLoadingAudit(false);
+          return;
+        }
       }
     } catch (err: any) {
-      console.error(err);
-      setAuditError('Unable to connect to AI audit service. Displaying deterministic verification standards.');
-      setAuditResult(
-        `### 1. Barrier Integrity & Spoilage Prevention\n` +
-        `- Target OTR of ${specification.barrierSpecs.otr.target} cc and WVTR of ${specification.barrierSpecs.wvtr.target} g are calibrated to retard oxidation and prevent premature moisture condensation for ${parameters.desiredShelfLifeDays} days.\n\n` +
-        `### 2. Micro-Atmosphere & MAP Gas Equilibrium\n` +
-        `- Controlled equilibrium maintains aerobic/anaerobic balance at ${parameters.storageTempC}°C without vacuum bag collapse.\n\n` +
-        `### 3. Circularity & Polymer Purity\n` +
-        `- Mono-material structure ${specification.primaryRecommendation.materialCode} achieves ${specification.circularity.circularityScore}/100 circularity with 95%+ stream recyclability.\n\n` +
-        `### 4. Regulatory Safety\n` +
-        `- Compliant with EU Regulation 10/2011 and US FDA 21 CFR 177.`
-      );
-      setAuditModel('Deterministic Baseline');
-      setIsBenchmark(true);
-    } finally {
-      setLoadingAudit(false);
+      console.warn('Backend audit call had an issue, trying direct client fallback:', err?.message || err);
     }
+
+    // 2. Direct Client-Side Fallback if user has entered an API key
+    if (apiKey) {
+      try {
+        const directResult = await directGeminiGenerate(
+          apiKey,
+          AUDIT_PROMPT_TEMPLATE(parameters, specification),
+          SYSTEM_INSTRUCTION
+        );
+        if (directResult) {
+          setAuditResult(directResult.text);
+          setAuditModel(directResult.modelUsed);
+          setIsBenchmark(false);
+          setLoadingAudit(false);
+          return;
+        }
+      } catch (directErr) {
+        console.warn('Direct Gemini call failed:', directErr);
+      }
+    }
+
+    // 3. High-fidelity scientific benchmark baseline
+    if (!apiKey && !hasServerEnvKey) {
+      setAuditError('No active Gemini API key detected. Displaying deterministic packaging engineering standards. Add key via the "API Key" button above or in Vercel to activate live Gemini models.');
+    }
+    setAuditResult(
+      `### 1. Barrier Integrity & Spoilage Prevention\n` +
+      `- Target OTR of ${specification.barrierSpecs.otr.target} cc and WVTR of ${specification.barrierSpecs.wvtr.target} g are calibrated to retard oxidation and prevent premature moisture condensation for ${parameters.desiredShelfLifeDays} days.\n\n` +
+      `### 2. Micro-Atmosphere & MAP Gas Equilibrium\n` +
+      `- Controlled equilibrium maintains aerobic/anaerobic balance at ${parameters.storageTempC}°C without vacuum bag collapse.\n\n` +
+      `### 3. Circularity & Polymer Purity\n` +
+      `- Mono-material structure ${specification.primaryRecommendation.materialCode} achieves ${specification.circularity.circularityScore}/100 circularity with 95%+ stream recyclability.\n\n` +
+      `### 4. Regulatory Safety\n` +
+      `- Compliant with EU Regulation 10/2011 and US FDA 21 CFR 177.`
+    );
+    setAuditModel('Deterministic Packaging Engineering Baseline');
+    setIsBenchmark(true);
+    setLoadingAudit(false);
   };
 
   const handleAskQuestion = async (e: React.FormEvent) => {
@@ -150,6 +200,7 @@ export const AiPackagingAuditor: React.FC<AiPackagingAuditorProps> = ({
     setChatQuestion('');
     setChatLoading(true);
 
+    // 1. Try Backend Serverless Endpoint
     try {
       const res = await fetch('/api/technical-chat', {
         method: 'POST',
@@ -165,29 +216,71 @@ export const AiPackagingAuditor: React.FC<AiPackagingAuditorProps> = ({
           },
         }),
       });
-      const data = await res.json();
-      setChatResponses((prev) => [
-        ...prev,
-        {
-          q,
-          a: data.answer || 'Consult standard ISO 15105 test protocols.',
-          model: data.modelUsed,
-          isBenchmark: data.isBenchmark,
-        },
-      ]);
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.answer && !data.isBenchmark) {
+          setChatResponses((prev) => [
+            ...prev,
+            {
+              q,
+              a: data.answer,
+              model: data.modelUsed,
+              isBenchmark: false,
+            },
+          ]);
+          setChatLoading(false);
+          return;
+        }
+      }
     } catch (err) {
-      setChatResponses((prev) => [
-        ...prev,
-        {
-          q,
-          a: `For ${parameters.customName}, maintain barrier limits (OTR: ${specification.barrierSpecs.otr.target} cc, WVTR: ${specification.barrierSpecs.wvtr.target} g). Ensure sealing bar temperature is properly calibrated within ${specification.physicalSpecs.sealTemperatureRange}.`,
-          model: 'Technical Reference',
-          isBenchmark: true,
-        },
-      ]);
-    } finally {
-      setChatLoading(false);
+      console.warn('Backend chat error, attempting direct client fallback:', err);
     }
+
+    // 2. Direct Client-Side Fallback
+    if (apiKey) {
+      try {
+        const chatSystemPrompt = `You are CircuPack Technical Advisor, an expert senior packaging engineer and food technologist.
+The user is asking a specific technical question regarding their food commodity packaging.
+Context:
+Commodity: ${parameters.customName || 'Food Commodity'}
+Current Substrate: ${specification.primaryRecommendation.materialName || 'Mono-material polymer'}
+OTR Target: ${specification.barrierSpecs.otr.target} cc/(m²·24h·atm)
+WVTR Target: ${specification.barrierSpecs.wvtr.target} g/(m²·24h)
+Storage Regimen: ${parameters.storageType || 'Ambient'}
+
+Answer authoritatively with practical industrial steps, testing standards (ASTM/ISO), and circular packaging recommendations. Keep it concise (under 200 words) and direct.`;
+
+        const directResult = await directGeminiGenerate(apiKey, q, chatSystemPrompt);
+        if (directResult) {
+          setChatResponses((prev) => [
+            ...prev,
+            {
+              q,
+              a: directResult.text,
+              model: directResult.modelUsed,
+              isBenchmark: false,
+            },
+          ]);
+          setChatLoading(false);
+          return;
+        }
+      } catch (directErr) {
+        console.warn('Direct chat error:', directErr);
+      }
+    }
+
+    // 3. Fallback answer
+    setChatResponses((prev) => [
+      ...prev,
+      {
+        q,
+        a: `For ${parameters.customName}, maintain barrier limits (OTR: ${specification.barrierSpecs.otr.target} cc, WVTR: ${specification.barrierSpecs.wvtr.target} g). Ensure sealing bar temperature is properly calibrated within ${specification.physicalSpecs.sealTemperatureRange}. (Configure Gemini API key to activate interactive AI dialogue).`,
+        model: 'Technical Reference Baseline',
+        isBenchmark: true,
+      },
+    ]);
+    setChatLoading(false);
   };
 
   const isAiActive = Boolean(hasServerEnvKey || apiKey);
